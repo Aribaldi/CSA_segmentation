@@ -10,7 +10,7 @@ from matplotlib import pyplot as plt
 from segmentation_models_pytorch.encoders import get_preprocessing_fn
 
 root_path = Path('data')
-IMAGE_SIZE = 224
+IMAGE_SIZE = 64
 BATCH_SIZE = 4
 
 
@@ -70,39 +70,33 @@ class SegDataset(Dataset):
         #sample['image'] = np.transpose(sample['image'], (2, 0, 1))
         sample['image_name'] = img_name
         sample['mask_name'] = mask_name
-        return sample #доделать вариант для обучения через smp
+        if self.training_mode == 'smp':
+            return sample['image'], sample['mask']
+        else:
+            return sample
 
 
 def pre_transforms(image_size=IMAGE_SIZE):
     return albu.Resize(image_size, image_size, p=1)
 
 
-def pw_transforms(): #дополнить
+def pw_transforms(image_size = IMAGE_SIZE): #дополнить
     result = albu.Compose([
         albu.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
         albu.HorizontalFlip(p=0.5),
         albu.VerticalFlip(p=0.5),
-        #albu.HueSaturationValue(p=1),
-        #albu.Blur(blur_limit=2)
-        #albu.Downscale()
+        albu.RandomRotate90(p=0.5),
+        albu.ShiftScaleRotate(0, (-0.5, 0.5), 0)
     ])
 
     return result
 
 
 def resize_transforms(image_size=IMAGE_SIZE):
-    pre_size = int(image_size * 1.5)
-    random_crop = albu.Compose([
-      albu.SmallestMaxSize(pre_size, p=1),
-      albu.RandomCrop(
-          image_size, image_size, p=1
-      )
-    ])
-    rescale = albu.Resize(image_size, image_size, p=1)
-    result = albu.OneOf([
-          random_crop,
-          rescale,
-      ], p=1)
+    result = albu.Compose([
+        albu.RandomResizedCrop(image_size, image_size)
+      ],
+        p=1)
     return result
 
 
@@ -115,19 +109,25 @@ def get_dataloader_single_folder(data_dir, imageFolder='Images', maskFolder='Mas
                                pw_transforms(),
                                ToTensor()
                                ]),
-        'Valid': albu.Compose([pre_transforms(), #Прочекать среднее и std для Normilise()
+        'Valid': albu.Compose([pre_transforms(), #Прочекать среднее и std для Normalise()
                               ToTensor()
                               ]),
-        'Test': albu.Compose([albu.Resize(512, 512, p=1),
+        'Test': albu.Compose([albu.Resize(224, 224, p=1),
                               ToTensorV2()])
     }
     image_datasets = {
         x: SegDataset(data_dir, imageFolder=imageFolder, maskFolder=maskFolder, seed=100, fraction=fraction, subset=x,
-                      transform=data_transforms[x])
-        for x in ['Train', 'Valid',  'Test']}
+                      transform=data_transforms[x], training_mode='smp')
+        for x in ['Train', 'Valid']}
     dataloaders = {x: DataLoader(image_datasets[x], batch_size=batch_size,
                                  shuffle=True, num_workers=4)
-                   for x in ['Train', 'Valid', 'Test']}
+                   for x in ['Train', 'Valid']}
+    dataloaders['Test'] = DataLoader(SegDataset(data_dir, imageFolder=imageFolder, maskFolder=maskFolder, seed=100,
+                                                fraction=fraction, subset='Test',
+                                                transform=data_transforms['Test']),
+                                     batch_size=batch_size,
+                                     shuffle=True,
+                                     num_workers=4)
     return dataloaders
 
 
