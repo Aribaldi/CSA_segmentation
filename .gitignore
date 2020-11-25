@@ -8,5 +8,4 @@ venv/
 *.csv
 *.npy
 *.npz
-data/raw/raw_photos/
-data/raw/raw_matrixes/
+
