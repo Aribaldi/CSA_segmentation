@@ -1,28 +1,49 @@
 import os 
 import numpy as np
-import pandas as pd
 import warnings
-
+from pathlib import Path
+import shutil
 from skimage import io
 from PIL import Image
 from torchvision import transforms
 from tqdm import tqdm
 
-def get_binary_mask(slice_df_ruin, image_path, matrix_path, photo_id, user):
+root_path = Path('../data')
+img_path = Path(root_path / 'raw' / 'raw_photos')
+dataset_path = root_path / 'preprocessed_dataset'
+
+
+def create_folders():
+    if not os.path.exists(dataset_path):
+        os.mkdir(dataset_path)
+    if not os.path.exists(dataset_path / 'photos'):
+        os.makedirs(dataset_path / 'photos')
+    if not os.path.exists(dataset_path / 'matrixes'):
+        os.makedirs(dataset_path / 'matrixes')
+
+
+def clean():
+    if os.path.exists(dataset_path):
+        shutil.rmtree(dataset_path)
+
+
+
+def get_binary_mask(slice_df_ruin, matrix_path, photo_id, user):
     '''
     Returns ruin binary mask as PIL.Image.
     1 -- ruined.
     '''
     task_df = slice_df_ruin[(slice_df_ruin['photo_id']==photo_id) & (slice_df_ruin['user']==user)]
     task_id = task_df['task_id'].unique()[0]
-    source_mask = np.load(f'{matrix_path}matrix_{photo_id}__{task_id}.npz')['data']
+    source_mask = np.load(f'{matrix_path}/matrix_{photo_id}__{task_id}.npz')['data']
     ruin_list = task_df['segment_num'].to_numpy()
     binary_mask = np.isin(source_mask, ruin_list)
     binary_mask = Image.fromarray(binary_mask, 'L')
     
     return binary_mask
 
-def get_ruin_mask(slice_df_ruin, image_path, matrix_path, photo_id, user):
+
+def get_ruin_mask(slice_df_ruin, matrix_path, photo_id, user):
     '''
     Returns ruin mask with breaks and probas as PIL.Image.
     1 -- break,
@@ -30,7 +51,7 @@ def get_ruin_mask(slice_df_ruin, image_path, matrix_path, photo_id, user):
     '''
     task_df = slice_df_ruin[(slice_df_ruin['photo_id']==photo_id) & (slice_df_ruin['user']==user)]
     task_id = task_df['task_id'].unique()[0]
-    source_mask = np.load(f'{matrix_path}matrix_{photo_id}__{task_id}.npz')['data']
+    source_mask = np.load(f'{matrix_path}/matrix_{photo_id}__{task_id}.npz')['data']
     break_list = task_df[task_df['segment_value']=='Разлом']['segment_num'].to_numpy()
     proba_list = task_df[task_df['segment_value']=='Проба']['segment_num'].to_numpy()
     ruin_mask = np.isin(source_mask, break_list)
@@ -45,11 +66,15 @@ def get_image(raw_df, image_path, photo_id):
     '''
     photo_df = raw_df[raw_df['Id']==photo_id]
     field, well = photo_df['Field'].to_numpy()[0], photo_df['Well'].to_numpy()[0]
-    image = Image.open(f'{image_path}{field}_{well}/{photo_id}.jpeg')
-    
+    image = Image.open(f'{image_path}/{field}_{well}/{photo_id}.jpeg')
     return image
 
-def preprocess(raw_df, slice_df, image_path, matrix_path, output_path, user_list=['markup_expert01'], output_size=(1536,256), proba=False):
+
+def preprocess(raw_df, slice_df,
+               image_path=img_path, matrix_path=root_path / 'raw' / 'raw_matrixes', output_path=dataset_path,
+               user_list=['markup_expert01'],
+               output_size=(1536,256),
+               proba=False):
     '''
     Preprocess' and saves images as .jpeg in output_path/photos/ and groundtruth labels as .npy in output_path/matrixes/.
 
@@ -58,20 +83,15 @@ def preprocess(raw_df, slice_df, image_path, matrix_path, output_path, user_list
     2) Crop scaled image by output_size[0];
     3) Fill segments outside of boundaries with black.
     '''
-    slice_df_ruin = slice_df[slice_df['segment_type']=='Разрушенность'] 
-
-    if not os.path.exists(f'{output_path}photos/'):
-        os.makedirs(f'{output_path}photos/')
-    if not os.path.exists(f'{output_path}matrixes/'):
-        os.makedirs(f'{output_path}matrixes/')
+    slice_df_ruin = slice_df[slice_df['segment_type']=='Разрушенность']
     
     warnings.filterwarnings("ignore")
     for user in np.intersect1d(slice_df_ruin['user'].unique(), user_list):
         for photo_id in tqdm(slice_df_ruin[slice_df_ruin['user']==user]['photo_id'].unique()):
             if proba:
-                mask = get_ruin_mask(slice_df_ruin, image_path, matrix_path, photo_id, user)
+                mask = get_ruin_mask(slice_df_ruin, matrix_path, photo_id, user)
             else:
-                mask = get_binary_mask(slice_df_ruin, image_path, matrix_path, photo_id, user)
+                mask = get_binary_mask(slice_df_ruin, matrix_path, photo_id, user)
             image = get_image(raw_df, image_path, photo_id)
             
             resize_image = transforms.Resize(size=output_size[1])
@@ -91,8 +111,8 @@ def preprocess(raw_df, slice_df, image_path, matrix_path, output_path, user_list
                     image_scaled_crop = np.pad(image_scaled_crop, ((0,output_size[0]-crop_h),(0,0),(0,0)), 'constant')
                     mask_scaled_crop = np.pad(mask_scaled_crop, ((0,output_size[0]-crop_h),(0,0)), 'constant')
                 
-                io.imsave(f'{output_path}photos/{str(photo_id)}_{str(crop_idx)}.jpeg', image_scaled_crop, quality=100)
-                np.save(f'{output_path}matrixes/{str(photo_id)}_{str(crop_idx)}.npy', mask_scaled_crop)
+                io.imsave(f'{output_path}/photos/{str(photo_id)}_{str(crop_idx)}.jpeg', image_scaled_crop, quality=100)
+                np.save(f'{output_path}/matrixes/{str(photo_id)}_{str(crop_idx)}.npy', mask_scaled_crop)
                 
                 h_idx += output_size[0]
                 crop_idx += 1

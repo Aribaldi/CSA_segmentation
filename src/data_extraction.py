@@ -5,22 +5,27 @@ import numpy as np
 from pathlib import Path
 from PIL import Image
 import albumentations as albu
-from albumentations.pytorch import ToTensorV2, ToTensor
-from matplotlib import pyplot as plt
-from segmentation_models_pytorch.encoders import get_preprocessing_fn
+from albumentations.pytorch import ToTensorV2
 
-root_path = Path('data')
-IMAGE_SIZE = 64
+root_path = Path('../data')
 BATCH_SIZE = 4
 
 
 class SegDataset(Dataset):
-    def __init__(self, root_dir, imageFolder, maskFolder, transform=None, seed=None, fraction=None, subset=None,
-                 preprocess=None, training_mode = 'deafult'):
-        self.preprocess = preprocess
+    def __init__(self, root_dir, imageFolder, maskFolder, transform=None, seed=None, fraction=None, subset=None):
+        '''
+        A custom images dataset; takes photos and masks from a given path an transfroms them using augmentations listed
+        in transforms param
+        :param root_dir: A base folder with whole dataset
+        :param imageFolder: Photos subfolder
+        :param maskFolder: Masks subfolder
+        :param transform: Callable data transforms, i.e PyTorch/Albumentations augmentations
+        :param seed: Random seed
+        :param fraction: Train split fraction (the rest is used on validation and test stages)
+        :param subset: Train/Val/Test mode
+        '''
         self.root_dir = root_dir
         self.transform = transform
-        self.training_mode = training_mode
         if not fraction:
             self.image_names = sorted(
                 glob.glob(os.path.join(self.root_dir, imageFolder, '*')))
@@ -60,64 +65,63 @@ class SegDataset(Dataset):
         image = Image.open(img_name)
         image = np.array(image)
         mask_name = self.mask_names[idx]
-        mask = np.load(mask_name)['arr_0']
-        #mask = Image.fromarray(mask, 'L')
+        mask = np.load(mask_name)
         sample = {'image':image, 'mask':mask}
         if self.transform:
             sample = self.transform(image=image, mask=mask)
-        if self.preprocess:
-            sample = self.preprocess(image=sample['image'], mask=sample['mask'])
-        #sample['image'] = np.transpose(sample['image'], (2, 0, 1))
         sample['image_name'] = img_name
         sample['mask_name'] = mask_name
-        if self.training_mode == 'smp':
-            return sample['image'], sample['mask']
-        else:
-            return sample
+        return sample
 
 
-def pre_transforms(image_size=IMAGE_SIZE):
-    return albu.Resize(image_size, image_size, p=1)
-
-
-def pw_transforms(image_size = IMAGE_SIZE): #дополнить
+def pixelwise_transforms():
     result = albu.Compose([
-        albu.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
-        albu.HorizontalFlip(p=0.5),
-        albu.VerticalFlip(p=0.5),
-        albu.RandomRotate90(p=0.5),
-        albu.ShiftScaleRotate(0, (-0.5, 0.5), 0)
+        albu.HorizontalFlip(p=0.5)
     ])
 
     return result
 
 
-def resize_transforms(image_size=IMAGE_SIZE):
+def resize_transforms():
     result = albu.Compose([
-        albu.RandomResizedCrop(image_size, image_size)
+        albu.Resize(768, 128, p=1)
       ],
         p=1)
     return result
 
 
 
-
-
-def get_dataloader_single_folder(data_dir, imageFolder='Images', maskFolder='Masks', fraction=0.2, batch_size=BATCH_SIZE):
+def get_dataloader_single_folder(data_dir, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225),
+                                 imageFolder='photos', maskFolder='matrixes',
+                                 fraction=0.2,
+                                 batch_size=BATCH_SIZE):
+    '''
+    Make iterable PyTorch DataLoader using instances of SegDataset class
+    :param data_dir: A base folder with whole dataset
+    :param mean: Parameter used in Normalization transform, set to imagenet mean by default
+    :param std: Parameter used in Normalization transform, set to imagenet std by default
+    :param imageFolder: Photos subfolder
+    :param maskFolder: Masks subfolder
+    :param fraction: Train split fraction (the rest is used on validation and test stages)
+    :param batch_size: Number of photo-mask pairs in one batch
+    '''
     data_transforms = {
         'Train': albu.Compose([resize_transforms(),
-                               pw_transforms(),
-                               ToTensor()
+                               pixelwise_transforms(),
+                               albu.Normalize(mean, std),
+                               ToTensorV2()
                                ]),
-        'Valid': albu.Compose([pre_transforms(), #Прочекать среднее и std для Normalise()
-                              ToTensor()
+        'Valid': albu.Compose([resize_transforms(),
+                               albu.Normalize(mean, std),
+                              ToTensorV2()
                               ]),
-        'Test': albu.Compose([albu.Resize(224, 224, p=1),
+        'Test': albu.Compose([resize_transforms(),
+                              albu.Normalize(mean, std),
                               ToTensorV2()])
     }
     image_datasets = {
         x: SegDataset(data_dir, imageFolder=imageFolder, maskFolder=maskFolder, seed=100, fraction=fraction, subset=x,
-                      transform=data_transforms[x], training_mode='smp')
+                      transform=data_transforms[x])
         for x in ['Train', 'Valid']}
     dataloaders = {x: DataLoader(image_datasets[x], batch_size=batch_size,
                                  shuffle=True, num_workers=4)
@@ -125,38 +129,7 @@ def get_dataloader_single_folder(data_dir, imageFolder='Images', maskFolder='Mas
     dataloaders['Test'] = DataLoader(SegDataset(data_dir, imageFolder=imageFolder, maskFolder=maskFolder, seed=100,
                                                 fraction=fraction, subset='Test',
                                                 transform=data_transforms['Test']),
-                                     batch_size=batch_size,
+                                     batch_size=1,
                                      shuffle=True,
                                      num_workers=4)
     return dataloaders
-
-
-def show_batch(dataloader, batch_size):
-    for bn, sample in enumerate(dataloader):
-        print(f'Batch №{bn}')
-        print(sample['image'].shape, sample['mask'].shape)
-        print(f"Images: \n {sample['image_name']},"
-              f"\n Masks: \n {sample['mask_name']}")
-        fig, ax = plt.subplots(batch_size, 4)
-        fig.suptitle(f'Batch №{bn}')
-        ax[0, 0].set_title('Original image')
-        ax[0, 1].set_title('Mask')
-        ax[0, 2].set_title('Transformed image')
-        ax[0, 3].set_title('Transformed mask')
-        for i in range(batch_size):
-            ax[i, 0].imshow(Image.open(sample['image_name'][i]))
-            ax[i, 1].imshow(np.load(sample['mask_name'][i])['arr_0'])
-            ax[i, 2].imshow(np.transpose(sample['image'][i], (1, 2, 0)))
-            ax[i, 3].imshow(np.transpose(sample['mask'][i], (1, 2, 0)))
-        plt.show()
-
-
-
-if __name__ == '__main__':
-    train = get_dataloader_single_folder(root_path / 'Dataset')['Train']
-    valid = get_dataloader_single_folder(root_path / 'Dataset')['Valid']
-    test = get_dataloader_single_folder(root_path / 'Dataset')['Test']
-    for tensor in iter(test).next()['image']:
-        print(tensor.shape, type(tensor))
-        print(tensor)
-    show_batch(train, BATCH_SIZE)
